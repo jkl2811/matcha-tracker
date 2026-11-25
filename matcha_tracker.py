@@ -116,14 +116,14 @@ def save_state(state: dict) -> None:
 
 
 def check_once() -> None:
-    keywords = [k.strip().lower() for k in os.environ.get("WATCH_KEYWORDS", "").split(",") if k.strip()]                   if any(k in p["name"].lower() or k in u.lower() for k in keywords)}
+    keywords = [k.strip().lower() for k in os.environ.get("WATCH_KEYWORDS", "").split(",") if k.strip()]
     current = fetch_all_products()
     if not current:
         raise RuntimeError("沒抓到任何商品，可能網站改版或被擋，請檢查。")
 
     if keywords:
         current = {u: p for u, p in current.items()
-                   if any(k in p["name"].lower() for k in keywords)}
+                   if any(k in p["name"].lower() or k in u.lower() for k in keywords)}
 
     previous = load_state()
     first_run = not previous
