@@ -72,6 +72,64 @@ def parse_products(html: str) -> dict:
     return products
 
 
+OUT_TEXTS = ["out of stock", "sold out", "currently unavailable", "not available",
+             "品切れ", "在庫切れ", "売り切れ"]
+
+
+def product_page_stock(url: str):
+    """打開商品頁判斷能不能買。回傳 (是否有貨, 判斷依據清單)。
+    原則：要「能按加入購物車」才算有貨，判斷不出來一律當缺貨，避免誤報。"""
+    soup = BeautifulSoup(fetch_html(url), "html.parser")
+    why = []
+
+    # 1) 多規格商品：看每個規格的 is_in_stock
+    form = soup.select_one("form.variations_form")
+    if form and form.get("data-product_variations") not in (None, "", "false"):
+        try:
+            variations = json.loads(form["data-product_variations"])
+            flags = [bool(v.get("is_in_stock")) and v.get("is_purchasable", True)
+                     for v in variations]
+            why.append(f"規格庫存={flags}")
+            return any(flags), why
+        except Exception as e:
+            why.append(f"規格解析失敗:{e}")
+
+    # 2) 商品主區塊（排除下方「相關商品」）
+    main = soup.select_one("div.summary, div.entry-summary") or \
+        soup.select_one("div.product, div[id^=product-]") or soup
+    for rel in main.select("section.related, section.upsells, .related, .upsells"):
+        rel.decompose()
+
+    prod_div = soup.select_one("div[id^=product-]")
+    if prod_div:
+        cls = prod_div.get("class", [])
+        why.append("商品class=" + ",".join(c for c in cls if "stock" in c))
+        if "outofstock" in cls:
+            return False, why
+
+    stock_el = main.select_one(".stock")
+    if stock_el:
+        cls = " ".join(stock_el.get("class", []))
+        why.append(f"庫存標示=[{cls}] {stock_el.get_text(' ', strip=True)[:60]}")
+        if "out-of-stock" in cls or "unavailable" in cls:
+            return False, why
+
+    text = main.get_text(" ", strip=True).lower()
+    hits = [t for t in OUT_TEXTS if t in text]
+    if hits:
+        why.append(f"缺貨文字={hits}")
+        return False, why
+
+    btn = main.select_one("button.single_add_to_cart_button, button[name=add-to-cart], "
+                          "input[name=add-to-cart], button[type=submit].button")
+    if not btn:
+        why.append("找不到加入購物車按鈕")
+        return False, why
+    disabled = btn.has_attr("disabled") or "disabled" in btn.get("class", [])
+    why.append("購物車按鈕=" + ("停用" if disabled else "可按"))
+    return (not disabled), why
+
+
 def fetch_all_products() -> dict:
     """含分頁一起抓"""
     products, url, seen = {}, CATALOG_URL, set()
@@ -124,6 +182,15 @@ def check_once() -> None:
     if keywords:
         current = {u: p for u, p in current.items()
                    if any(k in p["name"].lower() or k in u.lower() for k in keywords)}
+
+    # 逐一打開商品頁，以商品頁為準
+    for url, p in current.items():
+        try:
+            p["in_stock"], why = product_page_stock(url)
+        except Exception as e:
+            p["in_stock"], why = False, [f"商品頁讀取失敗:{e}"]
+        print(f"[{'有貨' if p['in_stock'] else '缺貨'}] {p['name']} | {url}\n    依據: {' / '.join(why)}")
+        time.sleep(2)
 
     previous = load_state()
     first_run = not previous
